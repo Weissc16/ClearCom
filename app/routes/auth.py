@@ -35,3 +35,29 @@ def register():
 
     access_token = create_access_token(identity=new_user.id)
     return jsonify({"access_token": access_token}), 201  # ✅ THIS is your final response
+
+
+@auth_bp.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+    
+    email = data.get('email')
+    password = data.get('password')
+
+    if not email or not password: 
+        return jsonify({"error": "Missing email or password"}), 400
+    
+    #Find user in db
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({"error": "Invalid cerdentials"}), 401
+    
+    #check pw in bcrypt
+    if not bcrypt.checkpw(password.encode('utf-8'), user.password_hash.encode('utf-8')):
+        return jsonify({"error": "Invalid credentials"}), 401
+    
+    #Return JWT if credentials are valid
+    access_token = create_access_token(identity=user.id)
+    return jsonify({"access_token": access_token}), 200
