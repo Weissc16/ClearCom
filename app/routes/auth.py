@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify  # ✅ make sure 'request' is included
 from app import db
 from app.models import User
-from flask_jwt_extended import create_access_token
+from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 import bcrypt
 
 auth_bp = Blueprint('auth', __name__)
@@ -33,7 +33,7 @@ def register():
     db.session.add(new_user)
     db.session.commit()
 
-    access_token = create_access_token(identity=new_user.id)
+    access_token = create_access_token(identity=str(new_user.id))
     return jsonify({"access_token": access_token}), 201  # ✅ THIS is your final response
 
 
@@ -59,5 +59,11 @@ def login():
         return jsonify({"error": "Invalid credentials"}), 401
     
     #Return JWT if credentials are valid
-    access_token = create_access_token(identity=user.id)
+    access_token = create_access_token(identity=str(user.id))
     return jsonify({"access_token": access_token}), 200
+
+@auth_bp.route('/protected', methods=['GET'])
+@jwt_required()
+def protected():
+    user_id = get_jwt_identity() #Get user id from JWT
+    return jsonify({"message": f"Welcome user {user_id}!"}), 200
