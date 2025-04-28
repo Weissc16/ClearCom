@@ -67,3 +67,18 @@ def login():
 def protected():
     user_id = get_jwt_identity() #Get user id from JWT
     return jsonify({"message": f"Welcome user {user_id}!"}), 200
+
+@auth_bp.route('/profile', methods=['GET'])
+@jwt_required()
+def profile():
+    user_id = get_jwt_identity() #Get user ID from JWT
+    user = User.query.get(user_id) #Loot up the user in the database
+
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    return jsonify({
+        "id": user.id,
+        "email": user.email,
+        "created_at": user.created_at
+    }), 200
