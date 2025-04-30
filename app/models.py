@@ -9,3 +9,34 @@ class User(db.Model):
 
     def __repr__(self):
         return f"<User {self.email}>"
+    
+
+class Chatroom(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    creator_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<Chatroom {self.name}>"
+    
+
+class ChatroomMember(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    chatroom_id = db.Column(db.Integer, db.ForeignKey('chatroom.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    joined_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    chatroom = db.relationship('Chatroom', backref=db.backref('members', lazy=True))
+    user = db.relationship('User', backref=db.backref('chatrooms', lazy=True))
+
+
+class Message(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    chatroom_id = db.Column(db.Integer, db.ForeignKey('chatroom.id'), nullable=False)
+    sender_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+    chatroom = db.relationship('Chatroom', backref=db.backref('messages', lazy=True))
+    sender = db.relationship('User')

@@ -1,6 +1,6 @@
-from flask import Blueprint, request, jsonify  # ✅ make sure 'request' is included
+from flask import Blueprint, request, jsonify 
 from app import db
-from app.models import User
+from app.models import *
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 import bcrypt
 
@@ -82,3 +82,133 @@ def profile():
         "email": user.email,
         "created_at": user.created_at
     }), 200
+
+@auth_bp.route('/chatrooms', methods=['POST'])
+@jwt_required()
+def create_chatroom():
+    data = request.get_json()
+    name = data.get('name')
+
+    if not name:
+        return jsonify({"error": "Chatroom name is required"}), 400
+    
+    user_id = get_jwt_identity()
+
+    new_chatroom = Chatroom(name=name, creator_id=user_id)
+
+    db.session.add(new_chatroom)
+    db.session.commit()
+
+    chatroom_member = ChatroomMember(chatroom_id=new_chatroom.id, user_id=user_id)
+    db.session.add(chatroom_member)
+    db.session.commit()
+
+    return jsonify({
+        "message": "Chatroom created successfully!",
+        "chatroom": {
+            "id": new_chatroom.id,
+            "name": new_chatroom.name,
+            "creator_id": new_chatroom.creator_id,
+            "created_at": new_chatroom.created_at
+        }
+    }), 201
+
+
+@auth_bp.route('/my_chatrooms', methods=['GET'])
+@jwt_required()
+def my_chatrooms():
+    user_id = get_jwt_identity()
+
+    chatroom_memberships = ChatroomMember.query.filter_by(user_id=user_id).all()
+    chatrooms = []
+
+    for membership in chatroom_memberships:
+        chatroom = membership.chatroom
+
+        # Get all members of the chatroom
+        members = [
+            {
+                "id": member.user.id,
+                "email": member.user.email
+            }
+            for member in chatroom.members
+        ]
+
+        chatrooms.append({
+            "id": chatroom.id,
+            "name": chatroom.name,
+            "creator_id": chatroom.creator_id,
+            "created_at": chatroom.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+            "members": members
+        })
+
+    return jsonify({"chatrooms": chatrooms})
+
+        
+@auth_bp.route('/send_message', methods=['POST'])
+@jwt_required()
+def send_message():
+    data = request.get_json()
+    user_id = get_jwt_identity()
+    chatroom_id = data.get("chatroom_id")
+    content = data.get("content")
+
+    if not chatroom_id or not content:
+        return jsonify({"error": "chatroom_id and notent are required"}), 400
+    
+    #Verify user is a member of the chatroom
+    membership = ChatroomMember.query.filter_by(chatroom_id=chatroom_id, user_id=user_id).first()
+    if not membership:
+        return jsonify({"error": "You are not a member of this chatroom"}), 403
+    
+    message = Message(chatroom_id=chatroom_id, sender_id=user_id, content=content)
+    db.session.add(message)
+    db.session.commit()
+
+    return jsonify({"messgae": "Message sent successfully"})
+
+
+@auth_bp.route('chatroom/<int:chatroom_id>/messages', methods=['GET'])
+@jwt_required()
+def get_chatroom_messages(chatroom_id):
+    user_id = get_jwt_identity()
+
+    #Ensure user is part of the chatroom
+    membership = ChatroomMember.query.filter_by(chatroom_id=chatroom_id, user_id=user_id).first()
+    if not membership:
+        return jsonify({"error": "Access denied to this chatroom"}), 403
+    
+    messages = Message.query.filter_by(chatroom_id=chatroom_id).order_by(Message.timestamt.asc()).all()
+
+    return jsonify({
+        "chatroom_id": chatroom_id,
+        "messages": [
+            {
+                "sender": msg.sender.email,
+                "content": msg.content,
+                "timestamp": msg.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+            }
+            for msg in messages
+        ]
+    })
+
+
+@auth_bp.route('/delete_message/<int:message_id>', methods=['DELETE'])
+@jwt_required()
+def delete_messgae(message_id):
+    user_id = get_jwt_identity()
+
+    #find the message
+    message = Message.query.get(message_id)
+    if not message:
+        return jsonify({"error": "Message not found"}), 404
+    
+    #Make sure the requester is the sender
+    if message.sender_id != user_id:
+        return jsonify({"error": "You are not authorized to delete this message"}), 403
+    
+    #delete the message
+    db.session.delete(message)
+    db.session.commit()
+
+    return jsonify({"message": "Message deleted successfully"}), 200
