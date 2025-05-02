@@ -2,6 +2,8 @@ from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import JWTManager
 from dotenv import load_dotenv
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 import os
 
 # load environment variables from .env
@@ -10,6 +12,8 @@ load_dotenv()
 # Initialize extensions globally
 db = SQLAlchemy()
 jwt = JWTManager()
+
+limiter = Limiter(get_remote_address, app=app, default_limits=["200 per day, 50 per hour"])
 
 def create_app():
     app = Flask(__name__)
