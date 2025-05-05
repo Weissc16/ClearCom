@@ -3,6 +3,9 @@ from app import db, limiter
 from app.models import *
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from flask_limiter.util import get_remote_address
+import secrets
+import string
+import random
 import bcrypt
 import re
 
@@ -304,6 +307,10 @@ def vote_poll(poll_id):
     return jsonify({"message": "Vote cast successfully"}), 200
 
 
+def generate_join_code(length=6):
+    characters = string.ascii_uppercase + string.digits
+    return ''.join(random.choices(characters, k=length))
+
 @auth_bp.route('/chatrooms/<int:chatroom_id>/add_member', methods=['POST'])
 @jwt_required()
 def add_member_to_chatroom(chatroom_id):
@@ -329,12 +336,24 @@ def add_member_to_chatroom(chatroom_id):
     if existing_member:
         return jsonify({"error": "User is already a member of the chatroom"}), 409
     
+    #generate secure join code
+    join_code = generate_join_code()
+    
     #Add user to chatroom
-    new_member = ChatroomMember(chatroom_id=chatroom_id, user_id=user_id_to_add)
+    new_member = ChatroomMember(
+        chatroom_id=chatroom_id, 
+        user_id=user_id_to_add, 
+        join_code=join_code,
+        is_verified=False
+    )
     db.session.add(new_member)
     db.session.commit()
 
-    return jsonify({"message": "User added to chatroom successfully."}), 200
+    return jsonify({
+        "message": "User added to chatroom successfully.",
+        "user_id": user_id_to_add,
+        "join_code": join_code
+    }), 200
 
 
 @auth_bp.route('/chatrooms/<int:chatroom_id>/remove_member', methods=['POST'])
@@ -417,7 +436,34 @@ def verify_chatroom_code(chatroom_id):
         return jsonify({"error": "Invalid Code"}), 401
 
 
+@auth_bp.route('/chatrooms/<int:chatroom_id>/join_codes', methods=['GET'])
+@jwt_required()
+def view_join_codes(chatroom_id):
+    user_id = int(get_jwt_identity())
 
+    chatroom = Chatroom.query.get(chatroom_id)
+    if not chatroom:
+        return jsonify({"error": "Chatroom not found"}), 404
+    
+    #Only the creator can view codes
+    if chatroom.creator_id != user_id:
+        return jsonify({"error": "Only the chatroom creator can view join codes"}), 403
+    
+    members = ChatroomMember.query.filty_by(chatroom_id=chatroom_id).all()
+
+    join_codes = []
+    for member in members:
+        if member.join_code:
+            join_codes.append({
+                "user_id": member.user.id,
+                "email": member.user.email,
+                "join_code": member.join_code
+            })
+
+    return jsonify({
+        "chatroom_id": chatroom_id,
+        "join_codes": join_codes
+    }), 200
 
 
 
