@@ -1,4 +1,4 @@
-from app import db
+from app.extensions import db
 from datetime import datetime
 
 class User(db.Model):
@@ -26,6 +26,8 @@ class ChatroomMember(db.Model):
     chatroom_id = db.Column(db.Integer, db.ForeignKey('chatroom.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     joined_at = db.Column(db.DateTime, default=datetime.utcnow)
+    join_code = db.Column(db.String(10), nullable=True) #Encrypted join code
+    is_verified = db.Column(db.Boolean, default=False)
 
     chatroom = db.relationship('Chatroom', backref=db.backref('members', lazy=True))
     user = db.relationship('User', backref=db.backref('chatrooms', lazy=True))
@@ -40,3 +42,18 @@ class Message(db.Model):
 
     chatroom = db.relationship('Chatroom', backref=db.backref('messages', lazy=True))
     sender = db.relationship('User')
+
+
+class Poll(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    question = db.Column(db.String(255), nullable=False)
+    chatroom_id = db.Column(db.Integer, db.ForeignKey('chatroom.id'), nullable=False)
+    creator_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class PollOption(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    option_text = db.Column(db.String(255), nullable=False)
+    poll_id = db.Column(db.Integer, db.ForeignKey('poll.id'), nullable=False)
+    vote_count = db.Column(db.Integer, default=0)

@@ -225,6 +225,10 @@ def get_chatroom_messages(chatroom_id):
     if not membership:
         return jsonify({"error": "Access denied to this chatroom"}), 403
     
+    #require join_code verification, if needed
+    if membership.join_code and not membership.is_verified:
+        return jsonify({"error": "Code verification required to view messages"}), 401
+    
     messages = Message.query.filter_by(chatroom_id=chatroom_id).order_by(Message.timestamt.asc()).all()
 
     return jsonify({
@@ -260,3 +264,186 @@ def delete_messgae(message_id):
     db.session.commit()
 
     return jsonify({"message": "Message deleted successfully"}), 200
+
+
+@auth_bp.route('/polls', methods=['POST'])
+@jwt_required()
+def create_poll():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    question = data.get('question')
+    options = data.get('options')
+    chatroom_id = data.get('chatroom_id')
+
+    if not question or not options or not chatroom_id:
+        return jsonify({"error": "Missing question, options, or chatroom_id"}), 400
+    
+    poll = Poll(question=question, chatroom_id=chatroom_id, creator_id=user_id)
+    db.session.add(poll)
+    db.session.commit()
+
+    for text in options:
+        db.session.add(PollOption(option_text=text, poll_id=poll.id))
+    db.session.commit()
+
+    return jsonify({"message": "Poll created", "poll_id": poll.id}), 201
+
+
+@auth_bp.route('/polls/<int:poll_id>/vote', methods=['POST'])
+@jwt_required()
+def vote_poll(poll_id):
+    data = request.get_json()
+    option_id = data.get('option_id')
+
+    option = PollOption.query.filter_by(id=option_id, poll_id=poll_id).first()
+    if not option:
+        return jsonify({"error": "Invalid option"}), 404
+    
+    option.vote_count += 1
+    db.session.commit()
+    return jsonify({"message": "Vote cast successfully"}), 200
+
+
+@auth_bp.route('/chatrooms/<int:chatroom_id>/add_member', methods=['POST'])
+@jwt_required()
+def add_member_to_chatroom(chatroom_id):
+    data = request.get_json()
+    user_id_to_add = data.get("user_id")
+    requesting_user_id = get_jwt_identity()
+
+    #Validate input
+    if not user_id_to_add:
+        return jsonify({"error": "user_id is required"}), 400
+    
+    #check if chatroom exists
+    chatroom = Chatroom.query.get(chatroom_id)
+    if not chatroom:
+        return jsonify({"error": "Chatroom not found"}), 404
+    
+    #Only chatroom creator can add members
+    if chatroom.creator_id != int(requesting_user_id):
+        return jsonify({"error": "Only the chatroom creator can add members"}), 403
+    
+    #Prevent adding the same user twice
+    existing_member = ChatroomMember.query.filter_by(chatroom_id=chatroom_id, user_id=user_id_to_add).first()
+    if existing_member:
+        return jsonify({"error": "User is already a member of the chatroom"}), 409
+    
+    #Add user to chatroom
+    new_member = ChatroomMember(chatroom_id=chatroom_id, user_id=user_id_to_add)
+    db.session.add(new_member)
+    db.session.commit()
+
+    return jsonify({"message": "User added to chatroom successfully."}), 200
+
+
+@auth_bp.route('/chatrooms/<int:chatroom_id>/remove_member', methods=['POST'])
+@jwt_required()
+def remove_member_from_chatroom(chatroom_id):
+    data = request.get_json()
+    user_id_to_remove = data.get('user_id')
+    requesting_user_id = int(get_jwt_identity())
+
+    if not user_id_to_remove:
+        return jsonify({"error": "user_id is required"}), 400
+    
+    chatroom = Chatroom.query.get(chatroom_id)
+    if not chatroom:
+        return jsonify({"error": "Chatroom not found"}), 404
+    
+    #Only creator can remove members
+    if chatroom.creator_id != requesting_user_id:
+        return jsonify({"error": "Only the chatroom creator can remove members"}), 403
+    
+    #Prevent creator from removing themselves
+    if chatroom.creator_id == int(user_id_to_remove):
+        return jsonify({"error": "Creator cannot remove themselves from their own chatroom"}), 403
+    
+    membership = ChatroomMember.query.filter_by(chatroom_id=chatroom_id, user_id=user_id_to_remove).first()
+    if not membership:
+        return jsonify({"error": "User is not a member of this chatroom"}), 404
+    
+    db.session.delete(membership)
+    db.session.commit()
+
+    return jsonify({"message": "User removed from chatroom successfully"}), 200
+
+
+@auth_bp.route('/chatrooms/<int:chatroom_id>/members', methods=['GET'])
+@jwt_required()
+def list_chatroom_members(chatroom_id):
+    uesr_id = int(get_jwt_identity())
+
+    #Ensure the user is a member of the chatroom
+    membership = ChatroomMember.query.filter_by(chatroom_id=chatroom_id, user_id=user_id).first()
+    if not membership:
+        return jsonify({"error": "Access denied to this chatroom"}), 403
+    
+    #Get all members
+    members = ChatroomMember.query.filter_by(chatroom_id=chatroom_id).all()
+
+    return jsonify({
+        "chatroom_id": chatroom_id,
+        "members": [
+            {
+                "id": member.user.id,
+                "email": member.user.email,
+                "joined_at": member.joined_at.strftime("%Y-%m-%d %H:%M:%S")
+            }
+            for member in members
+        ]
+    }), 200
+
+
+@auth_bp.route('/chatrooms/<int:chatroom_id>/verify_code', methods=['POST'])
+@jwt_required()
+def verify_chatroom_code(chatroom_id):
+    user_id = int(get_jwt_identity())
+    data = request.get_json()
+    code = data.get("code")
+
+    membership = ChatroomMember.query.filter_by(chatroom_id=chatroom_id, user_id=user_id).first()
+    if not membership:
+        return jsonify({"error": "You are not a member of this chatroom"}), 403
+    
+    if membership.join_code == code:
+        membership.join_code = None
+        membership.is_verified = True
+        db.session.commit()
+        current_app.logger.info(f"User {user_id} verified join code for chatroom {chatroom_id}")
+        return jsonify({"message": "Code verified, access granted"}), 200
+    else:
+        current_app.logger.warning(f"User {user_id} provided invalid code for chatroom {chatroom_id}")
+        return jsonify({"error": "Invalid Code"}), 401
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
