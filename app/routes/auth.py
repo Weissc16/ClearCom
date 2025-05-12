@@ -3,6 +3,7 @@ from app import db, limiter
 from app.models import *
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from flask_limiter.util import get_remote_address
+from app.utils.encryption import encrypt_message, decrypt_message
 import secrets
 import string
 import random
@@ -30,6 +31,21 @@ def is_strong_password(password):
         re.search(r"\d", password)
     )
 
+
+def generate_join_code(length=6):
+    characters = string.ascii_uppercase + string.digits
+    return ''.join(random.choices(characters, k=length))
+
+def is_admin_or_creator(user_id, chatroom_id):
+    membership = ChatroomMember.query.filter_by(user_id=user.id, chatroom_id=chatroom_id).first()
+    if membership and membership.role in ['admin', 'creator']:
+        return TimeoutError
+    return False
+
+
+
+
+#routes
 @auth_bp.route('/register', methods=['POST'])
 @limiter.limit("5 per minute", key_func=get_remote_address)
 def register():
@@ -129,7 +145,6 @@ def profile():
     }), 200
 
 
-
 @auth_bp.route('/chatrooms', methods=['POST'])
 @jwt_required()
 def create_chatroom():
@@ -146,7 +161,7 @@ def create_chatroom():
     db.session.add(new_chatroom)
     db.session.commit()
 
-    chatroom_member = ChatroomMember(chatroom_id=new_chatroom.id, user_id=user_id)
+    chatroom_member = ChatroomMember(chatroom_id=new_chatroom.id, user_id=user_id, role='creator')
     db.session.add(chatroom_member)
     db.session.commit()
 
@@ -159,7 +174,6 @@ def create_chatroom():
             "created_at": new_chatroom.created_at
         }
     }), 201
-
 
 
 @auth_bp.route('/my_chatrooms', methods=['GET'])
@@ -210,11 +224,13 @@ def send_message():
     if not membership:
         return jsonify({"error": "You are not a member of this chatroom"}), 403
     
-    message = Message(chatroom_id=chatroom_id, sender_id=user_id, content=content)
+    encrypted_content = encrypt_message(content)
+    
+    message = Message(chatroom_id=chatroom_id, sender_id=user_id, content=encrypted_content)
     db.session.add(message)
     db.session.commit()
 
-    return jsonify({"messgae": "Message sent successfully"})
+    return jsonify({"message": "Message sent successfully"})
 
 
 
@@ -239,13 +255,12 @@ def get_chatroom_messages(chatroom_id):
         "messages": [
             {
                 "sender": msg.sender.email,
-                "content": msg.content,
+                "content": decrypt_message(msg.content),
                 "timestamp": msg.timestamp.strftime("%Y-%m-%d %H:%M:%S")
             }
             for msg in messages
         ]
     })
-
 
 
 @auth_bp.route('/delete_message/<int:message_id>', methods=['DELETE'])
@@ -307,10 +322,6 @@ def vote_poll(poll_id):
     return jsonify({"message": "Vote cast successfully"}), 200
 
 
-def generate_join_code(length=6):
-    characters = string.ascii_uppercase + string.digits
-    return ''.join(random.choices(characters, k=length))
-
 @auth_bp.route('/chatrooms/<int:chatroom_id>/add_member', methods=['POST'])
 @jwt_required()
 def add_member_to_chatroom(chatroom_id):
@@ -327,9 +338,9 @@ def add_member_to_chatroom(chatroom_id):
     if not chatroom:
         return jsonify({"error": "Chatroom not found"}), 404
     
-    #Only chatroom creator can add members
-    if chatroom.creator_id != int(requesting_user_id):
-        return jsonify({"error": "Only the chatroom creator can add members"}), 403
+    #Only chatroom creator/admin can add members
+    if not is_admin_or_creator(chatroom_id, requesting_user_id):
+        return jsonify({"error": "Only admins or creators can add members"}), 403
     
     #Prevent adding the same user twice
     existing_member = ChatroomMember.query.filter_by(chatroom_id=chatroom_id, user_id=user_id_to_add).first()
@@ -339,12 +350,15 @@ def add_member_to_chatroom(chatroom_id):
     #generate secure join code
     join_code = generate_join_code()
     
+    role = data.get('role', 'member') #default to member if not provided
+
     #Add user to chatroom
     new_member = ChatroomMember(
         chatroom_id=chatroom_id, 
         user_id=user_id_to_add, 
         join_code=join_code,
-        is_verified=False
+        is_verified=False,
+        role = role
     )
     db.session.add(new_member)
     db.session.commit()
@@ -366,13 +380,13 @@ def remove_member_from_chatroom(chatroom_id):
     if not user_id_to_remove:
         return jsonify({"error": "user_id is required"}), 400
     
+    if not is_admin_or_creator(chatroom_id, requesting_user_id):
+        return jsonify({"error": "Only admins or creators can remove members"}), 403
+    
     chatroom = Chatroom.query.get(chatroom_id)
+
     if not chatroom:
         return jsonify({"error": "Chatroom not found"}), 404
-    
-    #Only creator can remove members
-    if chatroom.creator_id != requesting_user_id:
-        return jsonify({"error": "Only the chatroom creator can remove members"}), 403
     
     #Prevent creator from removing themselves
     if chatroom.creator_id == int(user_id_to_remove):
@@ -466,9 +480,42 @@ def view_join_codes(chatroom_id):
     }), 200
 
 
+@auth_bp.route('/chatrooms/<int:chatroom_id>/update_role', methods=['POST'])
+@jwt_required()
+def update_member_role(chatroom_id):
+    data = request.get_json()
+    target_user_id = data.get('user_id')
+    new_role = data.get('role')
 
+    requesting_user_id = int(get_jwt_identity())
 
+    #Validate input
+    if not target_user_id or not new_role:
+        return jsonify({"error": "user_id and role are required"}), 400
 
+    #check role validity       
+    valid_roles = ['creator', 'admin', 'member']
+    if new_role not in valid_roles:
+        return jsonify ({"error": f"Invalid role. Must be one of {valid_roles}"}), 400
+    
+    #check permissions
+    if not is_admin_or_creator(chatroom_id, requesting_user_id):
+        return jsonify({"error": "Only admins or creators can change member roles"}), 403
+    
+    #Prevent changing creator's role
+    chatroom = Chatroom.query.get(chatroom_id)
+    if chatroom and int(target_user_id) == chatroom.creator_id:
+        return jsonify({"error": "Cannot change the creator's role"}), 403
+    
+    #Upate role
+    membership = ChatroomMember.query.filty_by(chatroom_id=chatroom_id, user_id=target_user_id).first()
+    if not membership:
+        return jsonify({"error": "User is not a member of this chatroom"}), 404
+    
+    membership.role = new_role
+    db.session.commit()
+
+    return jsonify({"message": f"User role updated to '{new_role}"}), 200
 
 
 

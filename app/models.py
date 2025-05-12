@@ -28,6 +28,7 @@ class ChatroomMember(db.Model):
     joined_at = db.Column(db.DateTime, default=datetime.utcnow)
     join_code = db.Column(db.String(10), nullable=True) #Encrypted join code
     is_verified = db.Column(db.Boolean, default=False)
+    role = db.Column(db.String(20), default='member') #roles: creator, admin, member
 
     chatroom = db.relationship('Chatroom', backref=db.backref('members', lazy=True))
     user = db.relationship('User', backref=db.backref('chatrooms', lazy=True))
