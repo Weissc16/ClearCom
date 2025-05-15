@@ -4,6 +4,7 @@ from app.models import *
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from flask_limiter.util import get_remote_address
 from app.utils.encryption import encrypt_message, decrypt_message
+from app.utils.permissions import *
 import secrets
 import string
 import random
@@ -36,6 +37,7 @@ def generate_join_code(length=6):
     characters = string.ascii_uppercase + string.digits
     return ''.join(random.choices(characters, k=length))
 
+
 def is_admin_or_creator(user_id, chatroom_id):
     membership = ChatroomMember.query.filter_by(user_id=user.id, chatroom_id=chatroom_id).first()
     if membership and membership.role in ['admin', 'creator']:
@@ -45,7 +47,7 @@ def is_admin_or_creator(user_id, chatroom_id):
 
 
 
-#routes
+#Routes
 @auth_bp.route('/register', methods=['POST'])
 @limiter.limit("5 per minute", key_func=get_remote_address)
 def register():
@@ -145,6 +147,7 @@ def profile():
     }), 200
 
 
+
 @auth_bp.route('/chatrooms', methods=['POST'])
 @jwt_required()
 def create_chatroom():
@@ -176,6 +179,7 @@ def create_chatroom():
     }), 201
 
 
+
 @auth_bp.route('/my_chatrooms', methods=['GET'])
 @jwt_required()
 def my_chatrooms():
@@ -186,6 +190,9 @@ def my_chatrooms():
 
     for membership in chatroom_memberships:
         chatroom = membership.chatroom
+
+        if membership.mission_id != chatroom.mission_id:
+                continue
 
         # Get all members of the chatroom
         members = [
@@ -217,15 +224,21 @@ def send_message():
     content = data.get("content")
 
     if not chatroom_id or not content:
-        return jsonify({"error": "chatroom_id and notent are required"}), 400
+        return jsonify({"error": "chatroom_id and content are required"}), 400
     
     #Verify user is a member of the chatroom
     membership = ChatroomMember.query.filter_by(chatroom_id=chatroom_id, user_id=user_id).first()
     if not membership:
         return jsonify({"error": "You are not a member of this chatroom"}), 403
     
-    encrypted_content = encrypt_message(content)
+    chatroom = membership.chatroom
+
+    #Mission-based access control
+    if membership.mission_id != chatroom.mission_id:
+        return jsonify({"error": "Mission access not granted.  Cannot send message."}), 403
     
+    #Encrypt Message
+    encrypted_content = encrypt_message(content)
     message = Message(chatroom_id=chatroom_id, sender_id=user_id, content=encrypted_content)
     db.session.add(message)
     db.session.commit()
@@ -243,12 +256,19 @@ def get_chatroom_messages(chatroom_id):
     membership = ChatroomMember.query.filter_by(chatroom_id=chatroom_id, user_id=user_id).first()
     if not membership:
         return jsonify({"error": "Access denied to this chatroom"}), 403
+
+    #Load chatroom after confirming membership
+    chatroom = membership.chatroom
+
+    #Mission-based access control
+    if membership.mission_id != chatroom.mission_id:
+        return jsonify({"error": "Mission access denied.  Cannot view messages."}), 403
     
-    #require join_code verification, if needed
+    #require join code verification, if needed
     if membership.join_code and not membership.is_verified:
         return jsonify({"error": "Code verification required to view messages"}), 401
     
-    messages = Message.query.filter_by(chatroom_id=chatroom_id).order_by(Message.timestamt.asc()).all()
+    messages = Message.query.filter_by(chatroom_id=chatroom_id).order_by(Message.timestamp.asc()).all()
 
     return jsonify({
         "chatroom_id": chatroom_id,
@@ -261,6 +281,7 @@ def get_chatroom_messages(chatroom_id):
             for msg in messages
         ]
     })
+
 
 
 @auth_bp.route('/delete_message/<int:message_id>', methods=['DELETE'])
@@ -284,6 +305,7 @@ def delete_messgae(message_id):
     return jsonify({"message": "Message deleted successfully"}), 200
 
 
+
 @auth_bp.route('/polls', methods=['POST'])
 @jwt_required()
 def create_poll():
@@ -296,6 +318,15 @@ def create_poll():
     if not question or not options or not chatroom_id:
         return jsonify({"error": "Missing question, options, or chatroom_id"}), 400
     
+    chatroom = Chatroom.query.get(chatroom_id)
+    membership = ChatroomMember.query.filtyer_by(chatroom_id=chatroom_id, user_id=user_id).first()
+
+    if not membership:
+        return jsonify({"error": "Access denied to this chatroom"}), 403
+    
+    if membership.mission_id != chatroom.mission_id:
+        return jsonify({"error": "Access denied to this mission"}), 403
+    
     poll = Poll(question=question, chatroom_id=chatroom_id, creator_id=user_id)
     db.session.add(poll)
     db.session.commit()
@@ -305,6 +336,7 @@ def create_poll():
     db.session.commit()
 
     return jsonify({"message": "Poll created", "poll_id": poll.id}), 201
+
 
 
 @auth_bp.route('/polls/<int:poll_id>/vote', methods=['POST'])
@@ -320,6 +352,7 @@ def vote_poll(poll_id):
     option.vote_count += 1
     db.session.commit()
     return jsonify({"message": "Vote cast successfully"}), 200
+
 
 
 @auth_bp.route('/chatrooms/<int:chatroom_id>/add_member', methods=['POST'])
@@ -370,6 +403,7 @@ def add_member_to_chatroom(chatroom_id):
     }), 200
 
 
+
 @auth_bp.route('/chatrooms/<int:chatroom_id>/remove_member', methods=['POST'])
 @jwt_required()
 def remove_member_from_chatroom(chatroom_id):
@@ -402,15 +436,22 @@ def remove_member_from_chatroom(chatroom_id):
     return jsonify({"message": "User removed from chatroom successfully"}), 200
 
 
+
 @auth_bp.route('/chatrooms/<int:chatroom_id>/members', methods=['GET'])
 @jwt_required()
 def list_chatroom_members(chatroom_id):
-    uesr_id = int(get_jwt_identity())
+    user_id = int(get_jwt_identity())
 
+    chatroom = Chatroom.query.get(chatroom_id)
     #Ensure the user is a member of the chatroom
     membership = ChatroomMember.query.filter_by(chatroom_id=chatroom_id, user_id=user_id).first()
+
+
     if not membership:
         return jsonify({"error": "Access denied to this chatroom"}), 403
+    
+    if membership.mission_id != chatroom.mission_id:
+        return jsonify({"error": "Access denied to this mission"}), 403
     
     #Get all members
     members = ChatroomMember.query.filter_by(chatroom_id=chatroom_id).all()
@@ -426,6 +467,7 @@ def list_chatroom_members(chatroom_id):
             for member in members
         ]
     }), 200
+
 
 
 @auth_bp.route('/chatrooms/<int:chatroom_id>/verify_code', methods=['POST'])
@@ -448,6 +490,7 @@ def verify_chatroom_code(chatroom_id):
     else:
         current_app.logger.warning(f"User {user_id} provided invalid code for chatroom {chatroom_id}")
         return jsonify({"error": "Invalid Code"}), 401
+
 
 
 @auth_bp.route('/chatrooms/<int:chatroom_id>/join_codes', methods=['GET'])
@@ -478,6 +521,7 @@ def view_join_codes(chatroom_id):
         "chatroom_id": chatroom_id,
         "join_codes": join_codes
     }), 200
+
 
 
 @auth_bp.route('/chatrooms/<int:chatroom_id>/update_role', methods=['POST'])
@@ -519,13 +563,109 @@ def update_member_role(chatroom_id):
 
 
 
+@auth_bp.route('/missions', methods=['POST'])
+@jwt_required()
+def create_mission():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+
+    name = data.get('name')
+    classification = data.get('classification', 'Confidential')
+    description = data.get('description', '')
+
+    if not name:
+        return jsonify({"error": "Mission name is required"}), 400
+    
+    #restrict who can create missions
+    if not is_admin(user_id):
+        return jsonify({"error": "Only admins can create missions"}), 403
+    
+    mission = Mission(
+        name=name,
+        classification=classification,
+        description=description
+    )
+
+    db.session.add(mission)
+    db.session.commit()
+
+    return jsonify({
+        "message": "Mission created successfully",
+        "mission": {
+            "id": mission.id,
+            "name": mission.name,
+            "classification": mission.classification,
+            "description": mission.description,
+            "created_at": mission.created_at.strftime('%Y-%m-%d %H:%M:%S')
+        }
+    }), 201
 
 
 
+@auth_bp.route('chatrooms/<int:chatroom_id>/assign_mission', methods=['POST'])
+@jwt_required()
+def assign_mission_to_chatroom(chatroom_id):
+    user_id = int(get_jwt_identity())
+    data = request.get_json()
+    mission_id = data.get("mission_id")
+
+    if not mission_id:
+        return jsonify({"error": "mission_id is required"}), 400
+    
+    chatroom=Chatroom.query.get(chatroom_id)
+    if not chatroom:
+        return jsonify({"error": "Chatroom not found"}), 404
+    
+    if not is_admin(chatroom_id, user_id) and chatroom.creator_id != user_id:
+        return jsonify({"error": "Only the chatroom creator or admin can assign a mission"})
+
+    mission = Mission.query.get(mission_id)
+    if not mission:
+        return jsonify({"error": "Mission not found"}), 404
+    
+    chatroom.mission_id = mission.id
+    db.session.commit()
+
+    return jsonify({
+        "message": "Mission assigned to chatroom",
+        "chatroom_id": chatroom.id,
+        "mission_id": mission.id,
+        "mission_name": mission.name
+    }), 200
 
 
+@auth_bp.route('/missions/<int:mission_id>/assign_user', methods=['POST'])
+@jwt_required()
+def assign_user_to_mission(mission_id):
+    data = request.get_json()
+    user_id_to_assign = data.get('user_id')
+    chatroom_id = data.get('chatroom_id')
+    requesting_user_id= int(get_jwt_identity())
 
+    #cheack for requiredd data
+    if not user_id_to_assign or not chatroom_id:
+        return jsonify({"error": "user_id and chatroom_id are required."}), 400
+    
+    #Validate mission and chatroom
+    mission = Mission.query.get(mission_id)
+    chatroom = Chatroom.query.get(chatroom_id)
 
+    if not mission or not chatroom:
+        return jsonify({"error": "Mission or chatroom not found"}), 404
+    
+    #Confirm admin/creator access
+    if not is_admin_or_creator(chatroom_id, requesting_user_id):
+        return jsonify({"error": "Unauthorized"}), 403
+    
+    #Assign user to mission
+    membership = ChatroomMember.query.filter_by(chatroom_id=chatroom_id, user_id=user_id_to_assign).first()
+    if not membership:
+        return jsonify({"error": "User is not a member of the chatroom"}), 404
+    
+    membership.mission_id = mission_id
+    db.session.commit()
+
+    return jsonify({"message": f"User {user_id_to_assign} assigned to mission {mission_id}"}), 200
 
 
 

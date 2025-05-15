@@ -1,12 +1,13 @@
 from cryptography.fernet import Fernet
 
 #Use a secure, environment-stored key in production
-FERNET_KEY = b'lJNp60SnsOWYpzqpmLi-0FM8P5JWogf6j9mWQWsczKQ='
+with open("secret.key", "rb") as f:
+    key = f.read()
 
-cipher = Fernet(FERNET_KEY)
+fernet = Fernet(key)
 
-def encrypt_message(message):
-    return cipher.encrypt(message.encode()).decode()
+def encrypt_message(message: str) -> str:
+    return fernet.encrypt(message.encode()).decode()
 
-def decrypt_message(token):
-    return cipher.decrypt(token.encode()).decode()
+def decrypt_message(token: str) -> str:
+    return fernet.decrypt(token.encode()).decode()
